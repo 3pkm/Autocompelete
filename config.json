@@ -1,0 +1,7 @@
+{
+    "hotkey": "<ctrl>+<alt>+k",
+    "mappings": {
+        "brave": "start brave.exe https://www.google.com",
+        "env": "start brave.exe https://hianimez.to/home"
+    }
+}
