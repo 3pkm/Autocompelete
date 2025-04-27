@@ -1,10 +1,9 @@
-# filepath: d:\Autocompelete\main.py
+# filepath: d:\Autocompelete\main_enhanced.py
 import wx
 import threading
-import os
 import config
-import ui
-import hotkey_fix  # Import our hotkey fix module
+import ui as ui  
+import hotkey_fix as hotkey_fix  
 
 class KeywordAutomatorFrame(wx.Frame):
     def __init__(self):
@@ -16,7 +15,7 @@ class KeywordAutomatorFrame(wx.Frame):
         # Create a stop event for clean shutdown
         self.stop_event = threading.Event()
         
-        # Set up the fixed hotkey listener
+        # Set up the fixed hotkey listener (modified to support multiple hotkeys)
         self.hotkey_thread = hotkey_fix.setup_fixed_hotkey_listener(
             self, config.config, self.stop_event
         )
@@ -29,8 +28,8 @@ class KeywordAutomatorFrame(wx.Frame):
         # Hide the wx frame (we're using the UI module's interface)
         self.Hide()
         
-        print("Application initialized and running with UI module")
-        print(f"Press {config.config['hotkey']} to show the keyword input dialog")
+        print("Application initialized and running with enhanced UI module")
+        print(f"Press {config.config.get('global_hotkey', '<ctrl>+<alt>+k')} to show the keyword input dialog")
         print("The system tray icon should be visible now")
     
     def run_ui_app(self):
