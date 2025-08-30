@@ -12,11 +12,17 @@ logger = logging.getLogger(__name__)
 def resource_path(relative_path):
     """Get absolute path to resource, works for dev and for PyInstaller"""
     try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
+        logger.info(f"Using PyInstaller temp path: {base_path}")
+    except AttributeError:
+        # Normal Python execution
+        base_path = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
+        logger.info(f"Using development path: {base_path}")
     
-    return os.path.join(base_path, relative_path)
+    full_path = os.path.join(base_path, relative_path)
+    logger.info(f"Resource path resolved: {relative_path} -> {full_path}")
+    return full_path
 
 def create_fresh_tray_icon(app, image, title):
     """
@@ -72,19 +78,38 @@ def run_tray_icon_in_thread(app):
     """
     Creates a fresh icon instance and runs it in a new thread.
     This should be called each time the application is minimized to tray.
+    Enhanced for direct launch mode.
     """
     try:
+        logger.info("Creating fresh tray icon for direct launch mode...")
         app.icon = create_fresh_tray_icon(app, app.create_icon_image(), "Keyword Automator")
         
-        icon_thread = threading.Thread(target=app.run_icon)
-        icon_thread.daemon = True
+        def run_icon_safe():
+            try:
+                logger.info("Starting tray icon thread...")
+                app.icon.run()
+                logger.info("Tray icon thread completed")
+            except Exception as e:
+                logger.error(f"Error in tray icon thread: {e}", exc_info=True)
+            finally:
+                # Ensure proper cleanup to prevent process hanging
+                if hasattr(app.icon, '_icon'):
+                    try:
+                        app.icon._icon = None
+                    except:
+                        pass
+        
+        # Use daemon thread to ensure it doesn't prevent process termination
+        icon_thread = threading.Thread(target=run_icon_safe, daemon=True)
         icon_thread.start()
         
-        logger.info("Tray icon started successfully")
+        logger.info("Tray icon started successfully in direct launch mode")
         return icon_thread
+        
     except Exception as e:
         logger.error(f"Error running tray icon: {e}", exc_info=True)
         try:
+            logger.info("Attempting fallback tray implementation...")
             fallback = FallbackSystemTray(app)
             return fallback.run_in_thread()
         except Exception as e2:

@@ -1,6 +1,6 @@
 @echo off
-REM
-REM
+REM Direct launch batch file for Keyword Automator
+REM This runs the application directly without process chains
 
-REM
-start "" pythonw.exe "%~dp0run.py" %*
+REM Run main.py directly to avoid subprocess chains
+python.exe "%~dp0main.py" %*

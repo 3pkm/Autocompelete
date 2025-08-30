@@ -42,13 +42,39 @@ def ensure_config_dir():
         os.makedirs(CONFIG_DIR)
         logger.info(f"Created configuration directory: {CONFIG_DIR}")
 
+def get_config_file_path():
+    """Get the correct config file path, using a consistent location for executables"""
+    # For PyInstaller executables, use a fixed location next to the exe
+    if getattr(sys, 'frozen', False):
+        # We're running from a PyInstaller bundle
+        if hasattr(sys, '_MEIPASS'):
+            # Directory-based build - store config next to the executable
+            exe_dir = os.path.dirname(sys.executable)
+            config_file = os.path.join(exe_dir, 'config.json')
+        else:
+            # Fallback for onefile build
+            exe_dir = os.path.dirname(sys.executable)
+            config_file = os.path.join(exe_dir, 'config.json')
+        return config_file
+    else:
+        # For development, check if assets/config.json exists first
+        script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        assets_config = os.path.join(script_dir, 'assets', 'config.json')
+        
+        if os.path.exists(assets_config):
+            return assets_config
+        
+        # Fall back to user config directory
+        ensure_config_dir()
+        return CONFIG_FILE
+
 def load_config():
     """Load configuration with better error handling"""
-    ensure_config_dir()
+    config_file = get_config_file_path()
     
     try:
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, 'r') as f:
+        if os.path.exists(config_file):
+            with open(config_file, 'r') as f:
                 config = json.load(f)
                 
                 if 'global_hotkey' not in config and 'hotkey' in config:
@@ -76,14 +102,15 @@ def load_config():
                     'startup_minimized': False,
                     'launch_at_startup': True,
                     'theme': 'system',
-                    'has_seen_welcome': False
+                    'has_seen_welcome': False,
+                    'wizard_completed': False
                 }
                 
                 for key, value in default_values.items():
                     if key not in config:
                         config[key] = value
                 
-                logger.info("Configuration loaded successfully")
+                logger.info(f"Configuration loaded successfully from: {config_file}")
                 return config
         else:
             default_config = {
@@ -92,27 +119,33 @@ def load_config():
                 'launch_at_startup': True,
                 'theme': 'system',
                 'has_seen_welcome': False,
+                'wizard_completed': False,
                 'mappings': {}
             }
             save_config(default_config)
-            logger.info("Created default configuration")
+            logger.info(f"Created default configuration at: {config_file}")
             return default_config
             
     except Exception as e:
-        logger.error(f"Error loading configuration: {e}")
-        return {'global_hotkey': '<ctrl>+<alt>+k', 'mappings': {}}
+        logger.error(f"Error loading configuration from {config_file}: {e}")
+        return {'global_hotkey': '<ctrl>+<alt>+k', 'mappings': {}, 'has_seen_welcome': False, 'wizard_completed': False}
 
 def save_config(config):
     """Save configuration with better error handling"""
-    ensure_config_dir()
+    config_file = get_config_file_path()
+    
+    # Ensure the directory exists
+    config_dir = os.path.dirname(config_file)
+    if not os.path.exists(config_dir):
+        os.makedirs(config_dir)
     
     try:
-        with open(CONFIG_FILE, 'w') as f:
+        with open(config_file, 'w') as f:
             json.dump(config, f, indent=4)
-        logger.info("Configuration saved successfully")
+        logger.info(f"Configuration saved successfully to: {config_file}")
         return True
     except Exception as e:
-        logger.error(f"Error saving configuration: {e}")
+        logger.error(f"Error saving configuration to {config_file}: {e}")
         return False
 
 def set_launch_at_startup(enable=True):

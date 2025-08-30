@@ -7,6 +7,8 @@ hotkey combinations and various modifier keys.
 import logging
 import re
 from pynput import keyboard # Ensure pynput.keyboard is imported
+from .utils import HotkeyValidator
+from .error_handler import report_error, ErrorCategory
 
 # Get logger and ensure it's properly configured
 logger = logging.getLogger(__name__)
@@ -16,9 +18,6 @@ if not logger.handlers and not logging.getLogger().handlers:
     handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
     logger.addHandler(handler)
     logger.setLevel(logging.DEBUG)
-
-# Regular expression to parse hotkey combinations with modifiers
-# HOTKEY_PATTERN = re.compile(r"<([^>]+)>\\+(?:<([^>]+)>\\+)*([^<>+]+)") # Not used with GlobalHotKeys string format
 
 class HotkeyManager:
     """Manages global hotkeys with improved reliability"""
@@ -38,6 +37,18 @@ class HotkeyManager:
         # 1. Set up the global activation hotkey (e.g., to show input dialog)
         global_hotkey_str = self.config_data.get('global_hotkey')
         if global_hotkey_str:
+            # Validate global hotkey format
+            is_valid, error_msg = HotkeyValidator.validate_hotkey_format(global_hotkey_str)
+            if not is_valid:
+                logger.error(f"Invalid global hotkey format '{global_hotkey_str}': {error_msg}")
+                report_error(
+                    ValueError(f"Invalid global hotkey: {error_msg}"),
+                    ErrorCategory.HOTKEY,
+                    "invalid_format",
+                    context={"hotkey": global_hotkey_str}
+                )
+                return False
+            
             logger.info(f"Preparing global activation hotkey: {global_hotkey_str}")
 
             def on_global_hotkey_activated():
@@ -63,6 +74,27 @@ class HotkeyManager:
                 keyword_hotkey_str = details.get('hotkey')
                 # Ensure hotkey is valid and not the placeholder "None" or empty
                 if keyword_hotkey_str and keyword_hotkey_str.lower() != 'none' and keyword_hotkey_str.strip():
+                    
+                    # Validate individual hotkey format
+                    is_valid, error_msg = HotkeyValidator.validate_hotkey_format(keyword_hotkey_str)
+                    if not is_valid:
+                        logger.error(f"Invalid hotkey format for keyword '{keyword}': {error_msg}")
+                        continue
+                    
+                    # Check for conflicts
+                    conflicts = HotkeyValidator.detect_hotkey_conflicts(keyword_hotkey_str, mappings)
+                    conflicts = [c for c in conflicts if c != keyword]  # Exclude self
+                    if conflicts:
+                        logger.warning(f"Hotkey conflict detected for '{keyword_hotkey_str}': already used by {conflicts}")
+                        report_error(
+                            ValueError(f"Hotkey conflict: {keyword_hotkey_str} used by {conflicts[0]}"),
+                            ErrorCategory.HOTKEY,
+                            "conflict",
+                            context={"keyword": keyword, "conflicting_keywords": conflicts},
+                            show_dialog=False  # Don't spam user with dialogs
+                        )
+                        continue
+                    
                     logger.info(f"Preparing hotkey '{keyword_hotkey_str}' for keyword '{keyword}'.")
 
                     # Need to use a closure to correctly capture the keyword for each callback
@@ -80,12 +112,8 @@ class HotkeyManager:
                                 logger.error(f"App or app.execute_keyword for '{kw}' is not configured correctly.")
                         return callback
 
-                    # Ensure no conflict with global hotkey or other keyword hotkeys
-                    if keyword_hotkey_str in self.hotkeys_callbacks:
-                        logger.warning(f"Hotkey conflict: '{keyword_hotkey_str}' for keyword '{keyword}' is already assigned. Skipping.")
-                    else:
-                        self.hotkeys_callbacks[keyword_hotkey_str] = create_keyword_callback(keyword, keyword_hotkey_str)
-                        logger.debug(f"Callback for keyword hotkey '{keyword_hotkey_str}' prepared.")
+                    self.hotkeys_callbacks[keyword_hotkey_str] = create_keyword_callback(keyword, keyword_hotkey_str)
+                    logger.debug(f"Callback for keyword hotkey '{keyword_hotkey_str}' prepared.")
         
         if not self.hotkeys_callbacks:
             logger.warning("No hotkeys (global or keyword-specific) were successfully prepared.")
@@ -98,6 +126,12 @@ class HotkeyManager:
         """Start the hotkey listener for all configured hotkeys."""
         if not self.setup_all_hotkeys(): # Changed to setup_all_hotkeys
             logger.error("Failed to set up hotkeys. Listener not starting.")
+            report_error(
+                RuntimeError("Failed to set up hotkeys"),
+                ErrorCategory.HOTKEY,
+                "listener_failed",
+                context={"config": self.config_data.get('global_hotkey', 'Not set')}
+            )
             return None
 
         if not self.hotkeys_callbacks:
@@ -113,6 +147,12 @@ class HotkeyManager:
 
         except Exception as e:
             logger.error(f"Error starting hotkey listener: {e}", exc_info=True)
+            report_error(
+                e,
+                ErrorCategory.HOTKEY,
+                "listener_failed",
+                context={"hotkeys": list(self.hotkeys_callbacks.keys())}
+            )
             self.is_running = False
             if self.listener:
                 try:
