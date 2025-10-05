@@ -40,6 +40,8 @@ class ErrorReporter:
     def __init__(self, log_file_path: Optional[str] = None):
         self.error_log = []
         self.setup_local_logger(log_file_path)
+        # Lightweight audit/event logging separate from error reporting
+        # Use self.logger with category='audit' via extra fields
         
         # Error solutions database
         self.error_solutions = {
@@ -159,6 +161,26 @@ class ErrorReporter:
         console_formatter = logging.Formatter('%(levelname)s: %(message)s')
         console_handler.setFormatter(console_formatter)
         self.logger.addHandler(console_handler)
+    
+    def log_audit(self, action: str, details: Optional[Dict[str, Any]] = None):
+        """Log an audit/event entry to the same log file used for errors.
+
+        This is intended for informational events like admin executions.
+        """
+        try:
+            payload = {
+                "action": action,
+                "details": details or {},
+            }
+            extra = {
+                'category': 'audit',
+                'details': json.dumps(payload, indent=2, default=str),
+                'traceback': ''
+            }
+            self.logger.info(f"AUDIT: {action}", extra=extra)
+        except Exception:
+            # Do not raise from audit logging
+            pass
     
     def report_error(self, 
                     error: Exception, 
@@ -382,3 +404,7 @@ def report_error(error: Exception,
         user_message=user_message,
         show_dialog=show_dialog
     )
+
+def log_audit(action: str, details: Optional[Dict[str, Any]] = None) -> None:
+    """Convenience function for audit logging without raising or dialogs."""
+    error_reporter.log_audit(action, details)

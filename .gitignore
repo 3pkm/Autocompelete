@@ -1,7 +1,39 @@
-/env
-/__pycache__
-*.pyc
-/scripts
-config.json
-/build
-/dist
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+env/
+.env/
+.venv/
+venv/
+
+# Build & distribution
+build/
+dist/
+*.egg-info/
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+build/**/localpycs/
+
+# Logs & temp
+*.log
+*.tmp
+*.bak
+keyword_automator_errors.log
+
+# IDE/editor
+.vscode/
+.idea/
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Byte-compiled / optimized / DLL files
+*.pyd
+*.pyo

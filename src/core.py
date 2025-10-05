@@ -6,11 +6,21 @@ import logging
 import re
 import time
 import threading
+from typing import Dict, Tuple
+try:
+    # Prefer package import
+    from .error_handler import log_audit, ErrorCategory
+except Exception:
+    # Fallback for direct runs
+    from src.error_handler import log_audit, ErrorCategory  # type: ignore
 
 logger = logging.getLogger(__name__)
 
-def show_error_dialog(title, message):
-    """Show an error dialog to the user"""
+def show_error_dialog(title: str, message: str) -> None:
+    """Show an error dialog to the user using Tkinter on Windows.
+
+    Falls back to printing to stderr if Tk is unavailable.
+    """
     try:
         import tkinter as tk
         from tkinter import messagebox
@@ -28,8 +38,8 @@ def show_error_dialog(title, message):
         # If tkinter is not available, print to console as fallback
         print(f"ERROR - {title}: {message}")
 
-def detect_script_type(command):
-    """Detect what type of script is being executed"""
+def detect_script_type(command: str) -> str:
+    """Detect what type of script is being executed (python/powershell/batch/shell/command)."""
     command = command.lower().strip()
     
     if command.startswith('#!'):
@@ -64,9 +74,10 @@ def detect_script_type(command):
     
     return "command"
 
-def run_as_admin(command_to_run):
-    """
-    Runs a command with administrative privileges using PowerShell.
+def run_as_admin(command_to_run: str) -> Tuple[bool, str]:
+    """Run a command with administrative privileges using PowerShell on Windows.
+
+    Returns (success, output_or_error).
     """
     try:
         # Escape single quotes in command_to_run for PowerShell single-quoted string
@@ -113,8 +124,8 @@ def run_as_admin(command_to_run):
                               f"Command: {command_to_run}\\nError: {str(e)}")
         return False, str(e)
 
-def run_python_script(command, show_window=True):
-    """Run a Python script"""
+def run_python_script(command: str, show_window: bool = True) -> bool:
+    """Run a Python script via a temporary file."""
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.py', mode='w') as temp:
             temp.write(command)
@@ -134,8 +145,8 @@ def run_python_script(command, show_window=True):
         logger.error(f"Error running Python script: {e}")
         return False
 
-def run_powershell_script(command, use_admin=False, show_window=True):
-    """Run a PowerShell script"""
+def run_powershell_script(command: str, use_admin: bool = False, show_window: bool = True):
+    """Run a PowerShell script via a temporary file, optionally as admin."""
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.ps1', mode='w') as temp:
             temp.write(command)
@@ -160,8 +171,8 @@ def run_powershell_script(command, use_admin=False, show_window=True):
         logger.error(f"Error running PowerShell script: {e}")
         return False
 
-def run_batch_script(command, use_admin=False, show_window=True):
-    """Run a batch script"""
+def run_batch_script(command: str, use_admin: bool = False, show_window: bool = True):
+    """Run a batch script via a temporary file, optionally as admin."""
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.bat', mode='w') as temp:
             temp.write(command)
@@ -184,8 +195,8 @@ def run_batch_script(command, use_admin=False, show_window=True):
         logger.error(f"Error running batch script: {e}")
         return False
 
-def run_shell_script(command, use_admin=False, show_window=True):
-    """Run a shell script (for Unix-like systems)"""
+def run_shell_script(command: str, use_admin: bool = False, show_window: bool = True):
+    """Run a shell script (non-Windows)."""
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.sh', mode='w') as temp:
             temp.write(command)
@@ -215,8 +226,54 @@ def run_shell_script(command, use_admin=False, show_window=True):
         logger.error(f"Error running shell script: {e}")
         return False
 
-def execute_command(keyword, mappings):
-    """Execute a command or script associated with a keyword"""
+def _warn_dangerous(command: str) -> bool:
+    """Heuristic to flag potentially dangerous Windows commands.
+
+    Returns True if the command appears dangerous (format disk, regedit deletions, shutdown, etc.).
+    """
+    dangerous_patterns = [
+        r"\bformat\b",
+        r"\bdiskpart\b",
+        r"\bshutdown\b[ \t/.-]",
+        r"\breg(edit)?\b.*(/s|/delete|delete)",
+        r"\bdel\b\s+/s",
+        r"\brm\b\s+-rf",
+        r"\bsc\b\s+(delete|stop)",
+        r"\bpowershell\b\s+-Command\s+Remove-",
+    ]
+    cmd = command.lower()
+    return any(re.search(p, cmd) for p in dangerous_patterns)
+
+
+def _confirm_admin_and_danger(command: str, is_admin: bool) -> bool:
+    """Prompt the user to confirm running a command, especially with admin privileges or if dangerous.
+
+    Returns True to proceed, False to cancel.
+    """
+    needs_warning = is_admin or _warn_dangerous(command)
+    if not needs_warning:
+        return True
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk(); root.withdraw()
+        msg = "You're about to run this command with Administrator privileges." if is_admin else "You're about to run a potentially dangerous command."
+        proceed = messagebox.askokcancel(
+            "Confirm Elevated/Dangerous Command",
+            f"{msg}\n\nCommand:\n{command}\n\nProceed?"
+        )
+        root.destroy()
+        return bool(proceed)
+    except Exception:
+        # Headless fallback: do not block, proceed only if admin not requested
+        return not is_admin
+
+
+def execute_command(keyword: str, mappings: Dict) -> bool:
+    """Execute a command or script associated with a keyword.
+
+    Returns True on best-effort dispatch, False if validation fails or execution errors.
+    """
     if not mappings or keyword not in mappings:
         logger.error(f"Keyword '{keyword}' not found in mappings")
         return False
@@ -243,6 +300,28 @@ def execute_command(keyword, mappings):
             
         logger.info(f"Executing command for keyword '{keyword}': {command}")
         
+        # Confirm elevated/dangerous operations
+        is_admin = bool(locals().get('run_as_admin_flag', False))
+        is_danger = _warn_dangerous(command)
+        if not _confirm_admin_and_danger(command, is_admin):
+            logger.warning("User canceled elevated/dangerous command")
+            return False
+        # Audit-log the intent before dispatch
+        if is_admin or is_danger:
+            try:
+                log_audit(
+                    action="execute_command",
+                    details={
+                        "keyword": keyword,
+                        "elevated": bool(is_admin),
+                        "dangerous": bool(is_danger),
+                        # Avoid logging full content if it's too long
+                        "command_preview": (command[:200] + "…") if len(command) > 200 else command,
+                    },
+                )
+            except Exception:
+                pass
+
         if is_script:
             if run_as_admin_flag:
                 # Pass only the actual command, not 'cmd /c ...'
@@ -265,6 +344,9 @@ def execute_command(keyword, mappings):
                 else:
                     if sys.platform == 'win32':
                         return run_batch_script(command, run_as_admin_flag, show_window)
+                    else:
+                        # On non-Windows, attempt shell
+                        return run_shell_script(command, run_as_admin_flag, show_window)
         else:
             if sys.platform == 'win32':
                 if run_as_admin_flag:
@@ -284,6 +366,14 @@ def execute_command(keyword, mappings):
                     except Exception as e:
                         logger.error(f"Error executing command: {e}")
                         return False
+            else:
+                # Non-Windows direct command execution via shell
+                try:
+                    subprocess.Popen(command, shell=True)
+                    return True
+                except Exception as e:
+                    logger.error(f"Error executing non-Windows command: {e}")
+                    return False
     except Exception as e:
         logger.error(f"Error in execute_command for keyword '{keyword}': {e}", exc_info=True)
         return False

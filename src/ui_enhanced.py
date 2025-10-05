@@ -750,6 +750,9 @@ class KeywordAutomatorApp:
 
         self.update_keywords_list()
 
+        # Simple toast container
+        self._toast_after = None
+
         self.status_var = tk.StringVar(value="Ready")
         status_bar = ttk.Label(
             self.tk_root, textvariable=self.status_var, relief="sunken", anchor="w"
@@ -858,12 +861,14 @@ class KeywordAutomatorApp:
                     f"Are you sure you want to delete the keyword '{keyword}'?",
                 ):
                     if keyword in self.app_config.get("mappings", {}):
+                        # Save for undo
+                        deleted = (keyword, self.app_config["mappings"][keyword])
                         del self.app_config["mappings"][keyword]
                         config_module.save_config(self.app_config)
 
                         self.update_keywords_list()
-
                         self.setup_hotkey_listener()
+                        self.show_toast(f"Deleted '{keyword}'", undo=lambda: self._undo_delete(deleted))
 
     def run_selected_keyword(self):
         """Run the command for the selected keyword"""
@@ -873,7 +878,8 @@ class KeywordAutomatorApp:
             values = self.keywords_tree.item(item, "values")
             if values:
                 keyword = values[0]
-                self.execute_keyword(keyword)
+                if self.execute_keyword(keyword):
+                    self.show_toast(f"Executed '{keyword}'")
 
     def show_welcome_dialog(self):
         """Show a welcome dialog for first-time users."""
@@ -1244,8 +1250,11 @@ class KeywordAutomatorApp:
         input_dialog.parent_app = self
         self.tk_root.wait_window(input_dialog)
 
-    def execute_keyword(self, keyword):
-        """Execute the command associated with a keyword"""
+    def execute_keyword(self, keyword) -> bool:
+        """Execute the command associated with a keyword.
+
+        Returns True if dispatch started successfully, False otherwise.
+        """
         logger.info(f"Attempting to execute keyword: {keyword}")
         try:
             mappings = self.app_config.get("mappings", {})
@@ -1261,9 +1270,18 @@ class KeywordAutomatorApp:
             if hasattr(self, 'command_history'):
                 self.command_history.add_command(keyword)
             
+            # Busy cursor and status while dispatching command
+            try:
+                self.tk_root.config(cursor="watch")
+                self.status_var.set(f"Running: {keyword}…")
+                self.tk_root.update_idletasks()
+            except Exception:
+                pass
+
             success = core.execute_command(keyword, mappings)
             if success:
                 self.status_var.set(f"Executed: {keyword}")
+                self.show_toast(f"Executed '{keyword}'")
                 return True
             else:
                 self.status_var.set(f"Failed to execute: {keyword}")
@@ -1286,6 +1304,11 @@ class KeywordAutomatorApp:
                 user_message=f"An error occurred while executing '{keyword}'."
             )
             return False
+        finally:
+            try:
+                self.tk_root.config(cursor="")
+            except Exception:
+                pass
 
     def show_keyword_not_found_dialog(self, keyword):
         """Show enhanced dialog when keyword is not found"""
@@ -1691,6 +1714,7 @@ A productivity tool that lets you define keywords to trigger commands and script
         if dialog.result:
             self.update_keywords_list()
             self.setup_hotkey_listener()
+            self.show_toast("Mapping saved")
 
     def exit_app(self):
         """Exit the application"""
@@ -1719,6 +1743,36 @@ A productivity tool that lets you define keywords to trigger commands and script
     def run(self):
         """Run the application"""
         self.tk_root.mainloop()
+
+    def show_toast(self, message: str, duration_ms: int = 2500, undo=None):
+        """Show a lightweight toast/status message at the bottom with optional Undo."""
+        try:
+            if hasattr(self, '_toast_frame') and self._toast_frame:
+                self._toast_frame.destroy()
+        except Exception:
+            pass
+        frame = ttk.Frame(self.tk_root)
+        frame.place(relx=0.5, rely=1.0, anchor='s')
+        label = ttk.Label(frame, text=message)
+        label.pack(side='left', padx=(8, 4), pady=4)
+        if callable(undo):
+            ttk.Button(frame, text="Undo", command=lambda: (undo(), frame.destroy())).pack(side='left', padx=(4,8))
+        self._toast_frame = frame
+        if self._toast_after:
+            self.tk_root.after_cancel(self._toast_after)
+        self._toast_after = self.tk_root.after(duration_ms, lambda: frame.destroy())
+
+    def _undo_delete(self, deleted_tuple):
+        """Restore a deleted mapping (keyword, mapping)."""
+        try:
+            keyword, mapping = deleted_tuple
+            self.app_config.setdefault('mappings', {})[keyword] = mapping
+            config_module.save_config(self.app_config)
+            self.update_keywords_list()
+            self.setup_hotkey_listener()
+            self.show_toast(f"Restored '{keyword}'")
+        except Exception as e:
+            logger.error(f"Failed to undo delete: {e}")
 
 
 class InputDialog(tk.Toplevel):
@@ -2392,25 +2446,43 @@ class MappingDialog(tk.Toplevel):
             messagebox.showwarning("Invalid Input", "Please enter a command or script.")
             return
 
+        # Enforce unique keyword (unless renaming to same)
+        existing = self.config_data.get("mappings", {})
+        if (not self.edit_keyword or keyword != self.edit_keyword) and keyword in existing:
+            messagebox.showwarning("Duplicate Keyword", f"The keyword '{keyword}' already exists. Please choose another.")
+            return
+
         # Validate hotkey format if provided
         if hotkey:
             # Use hotkey validator if available
-            if hasattr(self.parent_app, 'resource_manager') and hasattr(self.parent_app.resource_manager, 'hotkey_validator'):
+            try:
                 try:
-                    is_valid, error_msg = self.parent_app.resource_manager.hotkey_validator.validate_hotkey_format(hotkey)
-                    if not is_valid:
-                        messagebox.showwarning("Invalid Hotkey", error_msg, parent=self)
-                        return
+                    from .utils import HotkeyValidator
                 except Exception:
-                    # Fallback validation
-                    if "+" not in hotkey:
-                        messagebox.showwarning(
-                            "Invalid Format",
-                            "Hotkey should be in format: <modifier>+<key> (e.g., <ctrl>+<alt>+k)",
-                        )
+                    from src.utils import HotkeyValidator  # fallback
+                is_valid, error_msg = HotkeyValidator.validate_hotkey_format(hotkey)
+                if not is_valid:
+                    messagebox.showwarning("Invalid Hotkey", error_msg, parent=self)
+                    return
+                # Conflict detection (ignore self when editing)
+                conflicts = []
+                for existing_kw, mapping in existing.items():
+                    if isinstance(mapping, dict):
+                        existing_hotkey = mapping.get('hotkey')
+                        if existing_hotkey and existing_hotkey.lower() != 'none' and existing_kw != self.edit_keyword:
+                            try:
+                                n1 = HotkeyValidator.normalize_hotkey(existing_hotkey)
+                                n2 = HotkeyValidator.normalize_hotkey(hotkey)
+                                if n1 == n2:
+                                    conflicts.append(existing_kw)
+                            except Exception:
+                                continue
+                if conflicts:
+                    if not messagebox.askyesno("Hotkey Conflict",
+                                               f"This hotkey is already used by: {', '.join(conflicts[:3])}.\n\nUse it anyway?"):
                         return
-            else:
-                # Basic validation
+            except Exception:
+                # Basic validation fallback
                 if "+" not in hotkey:
                     messagebox.showwarning(
                         "Invalid Format",
